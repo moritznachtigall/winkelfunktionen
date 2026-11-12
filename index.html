@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Festes Koordinatensystem im Bogenmaß mit transparenter Kurvenschablone.">
+<title>Parabelstudio</title>
+<style>
+:root{color-scheme:light;font:15px/1.4 "Inter","Segoe UI",sans-serif;color:#1b2d36;background:#f3f6f7}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}main{max-width:1380px;margin:auto;padding:clamp(9px,2vw,24px);display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:12px}
+.board{min-width:0;background:white;border:1px solid #d7e2e7;border-radius:14px;overflow:hidden}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #e0e8ec}
+.ink{display:flex;align-items:center;gap:5px;font-size:13px}.ink input{width:34px;height:31px;padding:2px;border:1px solid #d7e2e7;border-radius:6px;background:white;cursor:pointer}
+.tools{display:flex;gap:5px;flex-wrap:wrap}.tools button[aria-pressed=true]{background:#e2f0f7;border-color:#6292aa;color:#154b67}.toolbar-space{flex:1}
+output{min-width:115px;color:#164d69;font:600 17px Georgia,serif}
+button{border:1px solid #d7e2e7;border-radius:7px;background:white;color:inherit;line-height:1.3;font-family:inherit;font-size:13px;font-weight:600;padding:8px 11px;cursor:pointer}
+button:hover{background:#eef6fa}button:disabled{opacity:.45;cursor:default}.primary{color:white;background:#155779;border-color:#155779}.primary:hover{background:#10425d}
+button:focus-visible,input:focus-visible,svg:focus-visible,.edge:focus-visible{outline:3px solid #418fb6;outline-offset:2px}
+.scroll-view{overflow-x:auto;overflow-y:hidden;scrollbar-color:#84a5b7 #edf3f6}
+svg{display:block;width:100%;min-width:280px;height:clamp(255px,calc(100svh - 325px),410px);touch-action:none;user-select:none}
+svg[data-tool="pen"],svg[data-tool="eraser"]{cursor:crosshair}
+.reference{width:100%;margin:0;padding:8px 12px;background:white;border:1px solid #d7e2e7;border-radius:14px}
+.reference figcaption{font-size:14px;font-weight:600;padding:0 4px}
+.reference img{display:block;width:auto;max-width:100%;height:clamp(122px,26svh,190px);margin:auto;object-fit:contain}
+@media(min-width:760px),(min-width:610px) and (orientation:landscape){
+  main{grid-template-columns:minmax(0,1fr) clamp(172px,23vw,300px);gap:14px}
+  svg{height:clamp(255px,calc(100svh - 118px),650px)}
+  .reference{padding:12px}.reference img{width:100%;height:auto}
+}
+.scroll-range{display:none;width:calc(100% - 24px);margin:6px 12px 10px;accent-color:#43748e}
+@media(pointer:coarse){.scroll-range{display:block}}
+.plate{cursor:grab}.edge{cursor:pointer}.dragging,.dragging .plate,.dragging .edge{cursor:grabbing}
+@media(max-width:470px){header{padding:8px;gap:5px}button{padding:7px 8px;font-size:12px}output{min-width:80px;font-size:15px}}
+</style>
+</head>
+<body>
+<main>
+<div class="board">
+<header>
+<div class="tools" role="group" aria-label="Zeichenwerkzeug">
+<button type="button" data-tool="pen" aria-pressed="false">Stift</button>
+<button type="button" data-tool="eraser" aria-pressed="false">Radiergummi</button>
+<button type="button" data-tool="stencil" aria-pressed="true">Schablone</button>
+</div>
+<span class="toolbar-space"></span>
+<output id="active" aria-label="Ausgewählte Kurvenkante"></output>
+<label id="inkLabel" class="ink">Farbe <input id="curveColor" type="color" value="#573ca1" aria-label="Zeichenfarbe"></label>
+<button id="trace" type="button" class="primary">Kurve abzeichnen</button>
+<button id="undo" type="button" disabled>Rückgängig</button>
+</header>
+<div id="scrollView" class="scroll-view">
+<svg id="plot" tabindex="0" data-tool="stencil" aria-label="Koordinatensystem. Ziehe die Schablone oder klicke eine Kurvenkante an. Zum Drehen halte beim Ziehen die Umschalttaste gedrückt oder verwende zwei Finger."></svg>
+</div>
+<input id="scrollRange" class="scroll-range" type="range" min="0" max="0" value="0" aria-label="Zeichenfläche horizontal verschieben">
+</div>
+<figure class="reference">
+<figcaption>Einheitskreis</figcaption>
+<img src="./einheitskreis.svg" width="350" height="290" alt="Kreis mit Radius 1 um den Ursprung. Acht Winkel im Bogenmaß sind am Rand markiert.">
+</figure>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const plot=$('plot');
+const scrollView=$('scrollView');
+const scrollRange=$('scrollRange');
+const toolButtons=document.querySelectorAll('button[data-tool]');
+const pi=Math.PI;
+const bounds={left:-1.5*pi,right:3.5*pi,bottom:-1.5,top:1.5};
+const photoUnit=49;
+const maxTangent=Math.atan(3);
+const parabolicExtent=3.46;
+const curves={
+  sine:{formula:'y = sin(x)',origin:[157,377],horizontal:true,range:[0,2*pi],value:Math.sin,print:[216,121,-90]},
+  half:{formula:'y = 0,5 sin(x)',origin:[102,377],horizontal:true,range:[0,2*pi],value:x=>.5*Math.sin(x),print:[92,180,-90]},
+  tangent:{formula:'y = tan(x)',origin:[207,377],horizontal:false,range:[-maxTangent,maxTangent],value:Math.tan,print:[228,469,-90]},
+  parabola:{formula:'y = x²',origin:[174,613],horizontal:false,range:[-parabolicExtent,parabolicExtent],value:x=>x*x,print:[169,575,-90]}
+};
+const defaultInk='#573ca1';
+const colors=Object.fromEntries(Object.keys(curves).map(key=>[key,defaultInk]));
+let plate={x:0,y:0,key:'sine',angle:0};
+let marks=[];
+let tool='stencil';
+let initializedScroll=false;
+let gesture;
+let frame;
+
+function line(x1,y1,x2,y2,stroke,width=1){
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+stroke+'" stroke-width="'+width+'"/>';
+}
+function path(d,color,width,attrs=''){
+  return '<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="'+width+'" stroke-linecap="round" stroke-linejoin="round" '+attrs+'/>';
+}
+function text(x,y,label,attrs=''){
+  return '<text x="'+x+'" y="'+y+'" '+attrs+'>'+label+'</text>';
+}
+function px(x){return frame.l+(x-bounds.left)*frame.unit;}
+function py(y){return frame.t+(bounds.top-y)*frame.unit;}
+function clamp(x,min,max){return Math.max(min,Math.min(max,x));}
+function coordinates(event){
+  const box=plot.getBoundingClientRect();
+  const u=event.clientX-box.left,v=event.clientY-box.top;
+  return {u,v,x:bounds.left+(u-frame.l)/frame.unit,y:bounds.top-(v-frame.t)/frame.unit};
+}
+function piLabel(index){
+  if(!index) return '0';
+  const n=Math.abs(index);
+  return (index<0?'−':'')+(n===1||n===2?'':n%2?n:n/2)+'π'+(n%2?'/2':'');
+}
+function curvePath(key,map){
+  const curve=curves[key];
+  const [lo,hi]=curve.range;
+  const point=(x,y)=>map(x,y).join(' ');
+  const start='M '+point(lo,curve.value(lo));
+  if(key==='parabola') return start+' Q '+point(0,-hi*hi)+' '+point(hi,curve.value(hi));
+  const samples=192;
+  const points=[];
+  for(let i=1;i<=samples;i++){
+    const x=lo+(hi-lo)*i/samples;
+    points.push(point(x,curve.value(x)));
+  }
+  return start+' L '+points.join(' L ');
+}
+function photoPath(key){
+  const {origin:[u,v],horizontal}=curves[key];
+  return curvePath(key,(x,y)=>horizontal?[u-photoUnit*y,v-photoUnit*x]:[u+photoUnit*x,v-photoUnit*y]);
+}
+const slots=['half','sine','tangent'];
+const photoPaths=Object.fromEntries(Object.keys(curves).map(key=>[key,photoPath(key)]));
+const shoulder=613-photoUnit*parabolicExtent**2;
+const left=174-photoUnit*parabolicExtent,right=174+photoUnit*parabolicExtent;
+const outline=photoPaths.parabola+' Q '+(right+2)+' 15 334 15 L 14 15 Q '+(left-2)+' 15 '+left+' '+shoulder+' Z';
+
+function printedAxes(){
+  const stroke='#546c79';
+  const ink=(x1,y1,x2,y2)=>line(x1,y1,x2,y2,stroke,.9);
+  let parts='';
+  for(const key of ['half','sine']){
+    const {origin:[u,v]}=curves[key];
+    const amplitude=key==='half'?.5:1;
+    parts+=ink(u,v+3,u,v-2*pi*photoUnit);
+    parts+=ink(u-amplitude*photoUnit-5,v,u+amplitude*photoUnit+5,v);
+    for(let i=1;i<=4;i++){
+      const y=v-i*pi/2*photoUnit;
+      parts+=ink(u-4,y,u+4,y);
+      parts+=text(u+11,y+2,piLabel(i),'transform="rotate(-90 '+(u+11)+' '+(y+2)+')"');
+    }
+    parts+=text(u+10,v+11,'0');
+    parts+=text(u-amplitude*photoUnit-4,v+13,key==='half'?'0,5':'1','text-anchor="middle"');
+  }
+  const [tx,ty]=curves.tangent.origin;
+  parts+=ink(tx,ty-3.12*photoUnit,tx,ty+3.12*photoUnit);
+  parts+=ink(tx-pi/2*photoUnit,ty,tx+pi/2*photoUnit,ty);
+  for(const i of [-3,-2,-1,1,2,3]){
+    const y=ty-i*photoUnit;
+    parts+=ink(tx-4,y,tx+4,y)+text(tx-7,y+3,String(i).replace('-','−'),'text-anchor="end"');
+  }
+  for(const i of [-1,1]){
+    const x=tx+i*pi/4*photoUnit;
+    parts+=ink(x,ty-4,x,ty+4)+text(x,ty+14,(i<0?'−':'')+'π/4','text-anchor="middle"');
+  }
+  parts+=text(tx+6,ty+13,'0');
+  const [px,py]=curves.parabola.origin;
+  parts+=ink(px,py,px,py-1.65*photoUnit);
+  for(const y of [.5,1,1.5]){
+    const at=py-y*photoUnit;
+    parts+=ink(px-4,at,px+4,at)+text(px+7,at+3,String(y).replace('.',','));
+  }
+  return '<g fill="'+stroke+'" font-size="10.5" pointer-events="none">'+parts+'</g>';
+}
+
+function renderPlate(){
+  const selected=curves[plate.key];
+  const [u,v]=selected.origin;
+  const turn=' rotate('+((selected.horizontal?90:0)-plate.angle*180/pi)+')';
+  const scale=frame.unit/photoUnit;
+  const transform='translate('+px(plate.x)+' '+py(plate.y)+')'+turn+' scale('+scale+') translate('+(-u)+' '+(-v)+')';
+  let mask='', rims='', hitAreas='', printing='';
+  for(const key of slots){
+    mask+=path(photoPaths[key],'black',10);
+    rims+=path(photoPaths[key],'#7495a6',13,'pointer-events="none"');
+  }
+  for(const [key,curve] of Object.entries(curves)){
+    const label=curve.formula;
+    const target='class="edge" data-edge="'+key+'"';
+    const [x,y,angle]=curve.print;
+    const active=key===plate.key;
+    hitAreas+=path(photoPaths[key],'transparent',Math.max(18,12/scale),target+' tabindex="0" role="button" aria-label="'+label+'" aria-pressed="'+active+'"');
+    printing+=text(x,y,label,target+' pointer-events="auto" transform="rotate('+angle+' '+x+' '+y+')" fill="'+(active?'#124e70':'#425c69')+'" font-weight="'+(active?700:500)+'"');
+  }
+  for(let i=0;i<=12;i++){
+    const x=24+i*24.5;
+    printing+=line(x,16,x,i%2?23:28,'#617987');
+  }
+  return '<g transform="'+transform+'" font-size="14">'
+    +'<defs><mask id="slots" maskUnits="userSpaceOnUse" x="-20" y="-20" width="400" height="670"><rect x="-20" y="-20" width="400" height="670" fill="white"/>'+mask+'</mask><clipPath id="plateOutline"><path d="'+outline+'"/></clipPath></defs>'
+    +'<g mask="url(#slots)"><path class="plate" data-plate="true" d="'+outline+'" fill="#c8dbe4" fill-opacity=".43" stroke="#809ba8" stroke-width="2" stroke-linejoin="round"/>'+rims+'<g clip-path="url(#plateOutline)">'+printedAxes()+'</g></g>'
+    +path(photoPaths[plate.key],'#395668',5.4,'opacity=".52" pointer-events="none"')
+    +path(photoPaths[plate.key],colors[plate.key],3.6,'pointer-events="none"')
+    +'<g pointer-events="none">'+printing+'</g>'
+    +hitAreas+'</g>';
+}
+
+function setAngle(angle){
+  const turn=2*pi;
+  plate.angle=((angle+pi)%turn+turn)%turn-pi;
+}
+function render(){
+  const width=plot.clientWidth,height=plot.clientHeight;
+  if(!width||!height) return;
+  const span=bounds.right-bounds.left;
+  const unit=Math.min((width-66)/span,(height-54)/8);
+  const w=span*unit,h=(bounds.top-bounds.bottom)*unit;
+  frame={unit,l:(width-w)/2,t:(height-h)/2,w,h};
+  const {l,t}=frame,r=l+w,b=t+h;
+  const axisX=px(0),axisY=py(0);
+  let grid='',labels='';
+  const tick=pi/2;
+  const first=Math.ceil(bounds.left/tick-1e-10),last=Math.floor(bounds.right/tick+1e-10);
+  const stride=Math.max(1,Math.ceil(40/(unit*tick)));
+  for(let i=first;i<=last;i++){
+    const x=px(i*tick);
+    grid+=line(x,t,x,b,'#dce7ed')+line(x,axisY-3,x,axisY+3,'#617c8c');
+    const boundary=i===first||i===last;
+    const crowded=!boundary&&((i-first)*unit*tick<35||(last-i)*unit*tick<35);
+    if(boundary||(!crowded&&i%stride===0)){
+      const caption=piLabel(i);
+      labels+=text(x+(i===0?5:0),axisY+16,caption,'text-anchor="'+(i===0?'start':'middle')+'"');
+    }
+  }
+  for(let i=-3;i<=3;i++){
+    const y=py(i/2);
+    grid+=line(l,y,r,y,'#dce7ed')+line(axisX-3,y,axisX+3,y,'#617c8c');
+    if(i&&(unit>=32||Math.abs(i)===3)) labels+=text(axisX-7,y+4,String(i/2).replace('.',',').replace('-','−'),'text-anchor="end"');
+  }
+  grid+=line(l,axisY,r,axisY,'#607d8d',1.35)+line(axisX,t,axisX,b,'#607d8d',1.35);
+  labels+=text(r+10,axisY+4,'x','text-anchor="middle"')+text(axisX,t-8,'y','text-anchor="middle"');
+  const box='<rect x="'+l+'" y="'+t+'" width="'+w+'" height="'+h+'"';
+  let masks='',drawings='';
+  for(const [index,mark] of marks.entries()){
+    if(mark.key){
+      const c=Math.cos(mark.angle),s=Math.sin(mark.angle);
+      const d=curvePath(mark.key,(x,y)=>[px(mark.x+x*c-y*s),py(mark.y+x*s+y*c)]);
+      drawings+=path(d,mark.color??defaultInk,2.6);
+      continue;
+    }
+    const points=mark.points.map(p=>px(p.x)+' '+py(p.y));
+    const d='M '+points[0]+' L '+(points.slice(1).join(' L ')||points[0]);
+    if(mark.erase){
+      const id='erase'+index;
+      masks+='<mask id="'+id+'" maskUnits="userSpaceOnUse" x="'+l+'" y="'+t+'" width="'+w+'" height="'+h+'">'
+        +box+' fill="white"/>'+path(d,'black',mark.width*unit)+'</mask>';
+      drawings='<g mask="url(#'+id+')">'+drawings+'</g>';
+    } else drawings+=path(d,mark.color??defaultInk,2.6);
+  }
+  plot.innerHTML='<defs><clipPath id="graph">'+box+'/></clipPath>'+masks+'</defs>'
+    +box+' fill="#fcfdff"/>'+grid
+    +'<g clip-path="url(#graph)">'+drawings+'</g>'
+    +(tool==='stencil'?renderPlate():'')+'<g pointer-events="none" fill="#435c6c" font-size="11" style="paint-order:stroke;stroke:white;stroke-width:2px;stroke-linejoin:round">'+labels+'</g>';
+  $('active').textContent=curves[plate.key].formula;
+  if($('curveColor').value!==colors[plate.key]) $('curveColor').value=colors[plate.key];
+  $('undo').disabled=marks.length===0;
+}
+
+function select(key){plate.key=key;render();}
+function setTool(next){
+  tool=next;
+  gesture=null;
+  plot.classList.remove('dragging');
+  plot.dataset.tool=tool;
+  const useStencil=tool==='stencil';
+  for(const id of ['active','trace']) $(id).hidden=!useStencil;
+  $('inkLabel').hidden=tool==='eraser';
+  for(const button of toolButtons) button.setAttribute('aria-pressed',String(button.dataset.tool===tool));
+  render();
+}
+for(const button of toolButtons) button.onclick=()=>setTool(button.dataset.tool);
+function syncScroll(){
+  const max=Math.max(0,scrollView.scrollWidth-scrollView.clientWidth);
+  if(!initializedScroll&&frame&&scrollView.clientWidth){
+    initializedScroll=true;
+    if(scrollView.clientWidth<560) scrollView.scrollLeft=clamp(px(0)-scrollView.clientWidth*.35,0,max);
+  }
+  scrollRange.max=max;
+  scrollRange.hidden=max===0;
+  scrollRange.value=Math.round(scrollView.scrollLeft);
+}
+scrollView.addEventListener('scroll',syncScroll);
+scrollRange.addEventListener('input',()=>{scrollView.scrollLeft=scrollRange.valueAsNumber;});
+plot.addEventListener('pointerdown',event=>{
+  if(event.button!==0) return;
+  const start=coordinates(event);
+  if(gesture){
+    if(gesture.onPlate&&gesture.touch&&event.pointerType==='touch'&&!gesture.second){
+      gesture.second={id:event.pointerId,point:start};
+      gesture.pairAngle=pairAngle(gesture);
+      gesture.pairStart=plate.angle;
+      gesture.moved=true;
+      plot.setPointerCapture(event.pointerId);
+    }
+    return;
+  }
+  const edge=event.target.closest('[data-edge]');
+  const onPlate=edge||event.target.closest('[data-plate]');
+  const rotating=Boolean(onPlate&&event.shiftKey);
+  const inside=start.x>=bounds.left&&start.x<=bounds.right&&start.y>=bounds.bottom&&start.y<=bounds.top;
+  if(tool==='stencil'?!onPlate:!inside) return;
+  if(tool==='eraser'&&!marks.length) return;
+  gesture={id:event.pointerId,start,latest:start,plate:{...plate},rotating,onPlate:Boolean(onPlate),key:edge?.dataset.edge,touch:event.pointerType==='touch'};
+  if(rotating) gesture.startAngle=Math.atan2(start.y-plate.y,start.x-plate.x);
+  if(tool!=='stencil'){
+    gesture.mark=tool==='eraser'
+      ? {points:[start],erase:true,width:24/frame.unit}
+      : {points:[start],color:colors[plate.key]};
+    marks.push(gesture.mark);
+    render();
+  }
+  plot.setPointerCapture(event.pointerId);
+});
+function pairAngle(gesture){
+  const {point}=gesture.second;
+  return Math.atan2(point.y-gesture.latest.y,point.x-gesture.latest.x);
+}
+plot.addEventListener('pointermove',event=>{
+  if(!gesture||(gesture.id!==event.pointerId&&gesture.second?.id!==event.pointerId)) return;
+  const p=coordinates(event);
+  if(gesture.id===event.pointerId) gesture.latest=p;
+  else gesture.second.point=p;
+  if(gesture.second){
+    setAngle(gesture.pairStart+pairAngle(gesture)-gesture.pairAngle);
+    plot.classList.add('dragging');
+    render();
+    return;
+  }
+  if(!gesture.moved&&Math.hypot(p.u-gesture.start.u,p.v-gesture.start.v)<4) return;
+  if(gesture.rotating){
+    const dx=p.x-plate.x,dy=p.y-plate.y;
+    if(Math.hypot(dx,dy)*frame.unit<5) return;
+    setAngle(gesture.plate.angle+Math.atan2(dy,dx)-gesture.startAngle);
+    plot.classList.add('dragging');
+  } else if(gesture.onPlate){
+    plate.x=clamp(gesture.plate.x+p.x-gesture.start.x,bounds.left,bounds.right);
+    plate.y=clamp(gesture.plate.y+p.y-gesture.start.y,bounds.bottom,bounds.top);
+    plot.classList.add('dragging');
+  } else gesture.mark.points.push(p);
+  gesture.moved=true;
+  render();
+});
+function finish(event){
+  if(!gesture||(gesture.id!==event.pointerId&&gesture.second?.id!==event.pointerId)) return;
+  const {key,moved}=gesture;
+  gesture=null;
+  plot.classList.remove('dragging');
+  if(event.type==='pointerup'&&!moved&&key) select(key);
+}
+for(const name of ['pointerup','pointercancel','lostpointercapture']) plot.addEventListener(name,finish);
+plot.addEventListener('keydown',event=>{
+  if(tool!=='stencil') return;
+  const edge=event.target.closest('[data-edge]');
+  const turn=event.shiftKey?{ArrowLeft:1,ArrowRight:-1}[event.key]:0;
+  if(turn||event.key==='Home'){
+    event.preventDefault();
+    setAngle(event.key==='Home'?0:plate.angle+turn*5*pi/180);
+    render();
+    if(edge) plot.querySelector('path[data-edge="'+edge.dataset.edge+'"]').focus();
+    return;
+  }
+  if(edge&&(event.key==='Enter'||event.key===' ')){
+    event.preventDefault();
+    const key=edge.dataset.edge;
+    select(key);
+    plot.querySelector('path[data-edge="'+key+'"]').focus();
+    return;
+  }
+  const delta={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]}[event.key];
+  if(!delta) return;
+  event.preventDefault();
+  const step=event.shiftKey?.5:.1;
+  plate.x=clamp(plate.x+step*delta[0],bounds.left,bounds.right);
+  plate.y=clamp(plate.y+step*delta[1],bounds.bottom,bounds.top);
+  render();
+  if(edge) plot.querySelector('path[data-edge="'+edge.dataset.edge+'"]').focus();
+});
+$('curveColor').addEventListener('input',()=>{
+  const value=$('curveColor').value;
+  if(!/^#[0-9a-f]{6}$/i.test(value)) return;
+  colors[plate.key]=value.toLowerCase();
+  render();
+});
+$('trace').onclick=()=>{if(tool==='stencil'){marks.push({...plate,color:colors[plate.key]});render();}};
+$('undo').onclick=()=>{marks.pop();render();};
+const resize=new ResizeObserver(()=>{render();syncScroll();});
+resize.observe(scrollView);
+resize.observe(plot);
+render();
+syncScroll();
+</script>
+</body>
+</html>
